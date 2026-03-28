@@ -1,0 +1,102 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: |
+          cd frontend && npm install
+          cd ../backend && npm install
+
+      - name: Run frontend tests
+        id: frontend_test
+        run: |
+          cd frontend && npm test || echo "Frontend tests failed" > error.log
+          if [ -f error.log ]; then
+            curl -X POST http://backend:5000/api/code-repair/repair -d "{\"errorLog\": \"$(cat error.log)\", \"filePath\": \"frontend\"}"
+            exit 1
+          fi
+
+      - name: Run backend tests
+        id: backend_test
+        run: |
+          cd backend && npm test || echo "Backend tests failed" > error.log
+          if [ -f error.log ]; then
+            curl -X POST http://backend:5000/api/code-repair/repair -d "{\"errorLog\": \"$(cat error.log)\", \"filePath\": \"backend\"}"
+            exit 1
+          fi
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm ci # Use npm ci for faster and more reliable installs
+
+      - name: Build frontend
+        run: |
+          cd frontend && npm run build
+
+      - name: Build backend
+        run: |
+          cd backend && npm run build
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.ref == 'refs/heads/main' # Only deploy on main branch
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+
+      - name: Install production dependencies
+        run: npm ci --only=production
+
+      - name: Run database migrations
+        run: node database/migrations/runMigrations.js
+
+      - name: Seed the database
+        run: |
+          node seeds/seedUsers.js
+          node seeds/seedAppointments.js
+          node seeds/seedMedicalRecords.js
+
+      - name: Deploy to server
+        env:
+          NODE_ENV: production
+          MONGODB_URI: ${{ secrets.MONGODB_URI }} # Use GitHub Secrets for sensitive data
+        run: |
+          ssh -o StrictHostKeyChecking=no user@your-server-ip "cd /path/to/your/app && git pull origin main && npm ci --only=production && pm2 restart salma-unity-care-hospital"
+
+      - name: Notify deployment
+        run: echo "Deployment completed successfully!"
